@@ -33,6 +33,7 @@ while True:
 
     lower_bound = np.array([h_min, s_min, v_min])
     upper_bound = np.array([h_max, s_max, v_max])
+    
     mask = cv2.inRange(hsv, lower_bound, upper_bound)
 
     result = cv2.bitwise_and(frame, frame, mask=mask)
