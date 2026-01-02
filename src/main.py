@@ -6,21 +6,23 @@ from ultralytics import YOLO
 
 
 KNOWN_DISTANCE = 44.0 
-KNOWN_WIDTH = 18.0  
+KNOWN_WIDTH = 18.0 
 
-lower_yellow = np.array([20, 100, 100])
-upper_yellow = np.array([30, 255, 255])
 
 focalLength = 0
 is_calibrated = False
 
 
-def find_marker(frame):
-    """Find the colored marker in the frame and return its bounding rectangle."""
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-    mask = cv2.inRange(hsv, lower_yellow, upper_yellow)
+lower_color = np.array([20, 100, 100])
+upper_color = np.array([30, 255, 255])
 
-    cv2.imshow("Mask", mask)
+
+def find_marker(frame):
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, lower_color, upper_color)
+
+    mask = cv2.erode(mask, None, iterations=2)
+    mask = cv2.dilate(mask, None, iterations=2)
 
     contours = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
     contours = imutils.grab_contours(contours)
@@ -33,7 +35,7 @@ def find_marker(frame):
     if cv2.contourArea(largest_contour) < 500:
         return None
 
-    return cv2.minAreaRect(largest_contour)
+    return cv2.boundingRect(largest_contour)
 
 
 def distance_to_camera(knownWidth, focalLength, perWidth):
@@ -51,6 +53,7 @@ def calculate_focal_length(measured_distance, real_width, width_in_pixels):
 def detect_from_webcam(model_path: str = "yolov8n.pt", confidence: float = 0.5):
     global focalLength, is_calibrated
 
+    print("Loading YOLO model...")
     model = YOLO(model_path)
     cap = cv2.VideoCapture(0)
 
@@ -59,32 +62,30 @@ def detect_from_webcam(model_path: str = "yolov8n.pt", confidence: float = 0.5):
         return
 
     print("Press 'q' to quit")
-    print(
-        f"Hold your object (width: {KNOWN_WIDTH} in) at {KNOWN_DISTANCE} inches and press 'c' to calibrate"
-    )
+    print(f"Setup: Hold object ({KNOWN_WIDTH} in wide) at {KNOWN_DISTANCE} in away.")
+    print("Press 'c' to CALIBRATE when ready.")
 
     while True:
         ret, frame = cap.read()
         if not ret:
             break
 
+        results = model(frame, conf=confidence, verbose=False)
+        annotated_frame = results[0].plot()
+
         marker = find_marker(frame)
 
-        overlay = frame.copy()
-        cv2.rectangle(overlay, (0, 0), (350, 120), (0, 0, 0), -1)
-        alpha = 0.6
-        cv2.addWeighted(overlay, alpha, frame, 1 - alpha, 0, frame)
-
         if marker is not None:
-            box = cv2.boxPoints(marker)
-            box = np.int64(box)
-            cv2.drawContours(frame, [box], -1, (0, 255, 0), 2)
+            x, y, w, h = marker
 
-            pixel_width = max(marker[1][0], marker[1][1])
+            # Draw the box around the colored object
+            cv2.rectangle(annotated_frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+
+            pixel_width = w
 
             if not is_calibrated:
                 cv2.putText(
-                    frame,
+                    annotated_frame,
                     "CALIBRATION MODE",
                     (20, 40),
                     cv2.FONT_HERSHEY_SIMPLEX,
@@ -93,92 +94,81 @@ def detect_from_webcam(model_path: str = "yolov8n.pt", confidence: float = 0.5):
                     2,
                 )
                 cv2.putText(
-                    frame,
-                    f"Hold object at {KNOWN_DISTANCE} in",
-                    (20, 70),
+                    annotated_frame,
+                    f"Width: {pixel_width}px",
+                    (20, 80),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
+                    0.6,
                     (255, 255, 255),
-                    1,
-                )
-                cv2.putText(
-                    frame,
-                    f"Pixel width: {pixel_width:.0f}px",
-                    (20, 95),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
-                    (255, 255, 255),
-                    1,
-                )
-                cv2.putText(
-                    frame,
-                    "Press 'c' to calibrate",
-                    (180, 40),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5,
-                    (0, 255, 0),
                     2,
                 )
+
+                cv2.putText(
+                    annotated_frame,
+                    "Press 'c' to set",
+                    (x, y - 10),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (0, 255, 255),
+                    2,
+                )
+
             else:
                 inches = distance_to_camera(KNOWN_WIDTH, focalLength, pixel_width)
 
-                cv2.putText(
-                    frame,
-                    "DISTANCE:",
-                    (20, 30),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6,
-                    (200, 200, 200),
-                    1,
+                # Dynamic text color
+                text_color = (0, 255, 0)  
+                if inches > 50:
+                    text_color = (0, 0, 255)  
+                elif inches > 30:
+                    text_color = (0, 165, 255)  
+
+                label_text = f"{inches:.1f} in"
+
+                # Calculate text size for the background box
+                (text_w, text_h), baseline = cv2.getTextSize(
+                    label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.8, 2
                 )
 
-                text_color = (
-                    (0, 255, 0)
-                    if inches < 30
-                    else (0, 165, 255) if inches < 50 else (0, 0, 255)
+                # Logic to make text float above object (or below if at top of screen)
+                if y - 30 > 0:
+                    text_x = x
+                    text_y = y - 10
+                else:
+                    text_x = x
+                    text_y = y + h + 25
+
+                # Draw black background rectangle for text
+                cv2.rectangle(
+                    annotated_frame,
+                    (text_x, text_y - text_h - 5),
+                    (text_x + text_w, text_y + 5),
+                    (0, 0, 0),
+                    -1,
                 )
 
+                # Draw the distance text
                 cv2.putText(
-                    frame,
-                    f"{inches:.1f} in",
-                    (20, 75),
+                    annotated_frame,
+                    label_text,
+                    (text_x, text_y),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    1.5,
-                    text_color,
-                    3,
-                )
-                cv2.putText(
-                    frame,
-                    f"({inches * 2.54:.1f} cm)",
-                    (20, 105),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6,
+                    0.8,
                     text_color,
                     2,
                 )
+
         else:
             if not is_calibrated:
                 cv2.putText(
-                    frame,
-                    "CALIBRATION MODE",
+                    annotated_frame,
+                    "Looking for color marker...",
                     (20, 40),
                     cv2.FONT_HERSHEY_SIMPLEX,
-                    0.8,
-                    (0, 255, 255),
+                    0.7,
+                    (0, 0, 255),
                     2,
                 )
-            cv2.putText(
-                frame,
-                "SEARCHING FOR OBJECT...",
-                (20, 70),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.7,
-                (0, 0, 255),
-                2,
-            )
-
-        results = model(frame, conf=confidence, verbose=False)
-        annotated_frame = results[0].plot()
 
         cv2.imshow("Distance Measurement", annotated_frame)
 
@@ -186,13 +176,15 @@ def detect_from_webcam(model_path: str = "yolov8n.pt", confidence: float = 0.5):
         if key == ord("q"):
             break
         elif key == ord("c") and marker is not None and not is_calibrated:
-            pixel_width = max(marker[1][0], marker[1][1])
+            # Calibrate using the current width
+            pixel_width = marker[2]
             focalLength = calculate_focal_length(
                 KNOWN_DISTANCE, KNOWN_WIDTH, pixel_width
             )
             is_calibrated = True
-            print(f"Calibrated! Focal Length: {focalLength:.2f}")
+            print(f"Calibration Complete! Focal Length: {focalLength:.2f}")
         elif key == ord("r"):
+            # Reset calibration
             is_calibrated = False
             focalLength = 0
             print("Calibration reset")
@@ -204,39 +196,34 @@ def detect_from_webcam(model_path: str = "yolov8n.pt", confidence: float = 0.5):
 def main():
     parser = argparse.ArgumentParser(description="Distance Measurement with YOLO")
     parser.add_argument(
-        "--model",
-        type=str,
-        default="yolov8n.pt",
-        help="YOLO model path (default: yolov8n.pt)",
+        "--model", type=str, default="yolov8n.pt", help="YOLO model path"
     )
     parser.add_argument(
-        "--confidence",
-        type=float,
-        default=0.5,
-        help="Detection confidence threshold (default: 0.5)",
+        "--confidence", type=float, default=0.5, help="Detection confidence"
     )
     parser.add_argument(
         "--color",
         type=str,
         default="yellow",
         choices=["yellow", "red", "green", "blue"],
-        help="Color of object to track (default: yellow)",
+        help="Color to track",
     )
 
     args = parser.parse_args()
 
-    # Set color range based on argument
-    global lower_yellow, upper_yellow
+    # Set global color range
+    global lower_color, upper_color
     color_ranges = {
         "yellow": ([20, 100, 100], [30, 255, 255]),
         "red": ([0, 100, 100], [10, 255, 255]),
         "green": ([40, 100, 100], [80, 255, 255]),
         "blue": ([100, 100, 100], [130, 255, 255]),
     }
-    lower_yellow = np.array(color_ranges[args.color][0])
-    upper_yellow = np.array(color_ranges[args.color][1])
 
-    print(f"Tracking {args.color} objects")
+    lower_color = np.array(color_ranges[args.color][0])
+    upper_color = np.array(color_ranges[args.color][1])
+
+    print(f"Tracking {args.color} object...")
     detect_from_webcam(args.model, args.confidence)
 
 
